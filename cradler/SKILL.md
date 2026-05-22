@@ -77,6 +77,10 @@ await cradler.from("posts").insert([{ title: "A" }, { title: "B" }]);
 
 Writing a field that does not exist yet adds the column automatically.
 
+Every row automatically gets three Cradler-managed fields — `id`,
+`createdAt`, and `updatedAt`. Read them and filter or order by them, but
+never pass them to `insert()` or `update()` — Cradler always sets them.
+
 ### Query
 
 ```ts
@@ -153,6 +157,8 @@ try {
   key there.
 - Do not hardcode keys — read them from environment variables.
 - Use `camelCase` field names.
+- `id`, `createdAt`, `updatedAt` are managed by Cradler — read them, but
+  never include them in an `insert()` or `update()`.
 - `delete()` always needs at least one filter.
 
 ## Related
