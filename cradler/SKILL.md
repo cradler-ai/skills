@@ -97,6 +97,16 @@ const { rows, count } = await cradler
 
 // Just the first match, or null:
 const post = await cradler.from("posts").select().eq("id", id).first();
+
+// How many posts are there in total? `count` cannot answer that — it is the
+// size of the page you got back, so it never exceeds `limit`. Ask for
+// `total`, which counts every row matching the filters:
+const { rows: page, total } = await cradler
+  .from("posts")
+  .select()
+  .eq("published", true)
+  .limit(20)
+  .count("exact");
 ```
 
 Filters — chain as many as needed: `.eq` `.neq` `.gt` `.gte` `.lt` `.lte`
@@ -106,13 +116,18 @@ Filters — chain as many as needed: `.eq` `.neq` `.gt` `.gte` `.lt` `.lte`
 ### Update and delete
 
 ```ts
+// update() requires at least one filter — an unscoped update would rewrite
+// every row in the collection, with no way to undo it.
 await cradler.from("posts").update({ published: false }).eq("id", id);
 
 // delete() requires at least one filter — it can never wipe a whole table.
 await cradler.from("posts").delete().eq("id", id);
 ```
 
-Every insert / query / update / delete resolves to `{ rows, count }`.
+Every insert / query / update / delete resolves to `{ rows, count }`, where
+`count` is `rows.length`. On a query it is the size of the page, so it is
+bounded by `limit` — to learn how many rows match overall, add
+`.count("exact")` and read `total`.
 
 ## Files and images
 
@@ -157,7 +172,8 @@ to a fresh URL with `getUrl()` when you need to display it.
 
 ## Errors
 
-Failed calls throw a `CradlerError` with an HTTP `status` and a `message`:
+Failed calls throw a `CradlerError` with an HTTP `status`, a machine-readable
+`code`, and a `message` that names what is wrong:
 
 ```ts
 import { CradlerError } from "@cradler/sdk";
@@ -166,10 +182,27 @@ try {
   await cradler.from("posts").insert({ title: "x" });
 } catch (err) {
   if (err instanceof CradlerError) {
-    console.error(err.status, err.message);
+    console.error(err.status, err.code, err.message);
   }
 }
 ```
+
+**Read the message — it says how to fix the call.** A type mismatch names the
+field, the type the column holds and the value it got
+(`field 'views' expects numeric, got str ('many')`); fix the value rather than
+retrying. The codes worth handling:
+
+| code | status | means |
+| --- | --- | --- |
+| `validation_failed` | 422 | A value or filter does not fit the column. The message names the field. |
+| `schema_conflict` | 422 | A field's type clashes with the column that already exists. |
+| `quota_exceeded` | 402 | The project is out of its plan's monthly requests or storage. |
+| `constraint_violation` | 409 | A unique index or similar rejected the write. |
+| `unauthorized` / `forbidden` | 401 / 403 | Bad key, or the `anon` key lacks permission on that table. |
+| `database_unavailable` | 503 | Transient — retry with backoff. |
+
+Every error also carries a `requestId`, which appears in Cradler's own logs.
+Include it when reporting a problem.
 
 ## Rules
 
@@ -181,10 +214,16 @@ try {
 - Use `camelCase` field names.
 - `id`, `createdAt`, `updatedAt` are managed by Cradler — read them, but
   never include them in an `insert()` or `update()`.
-- `delete()` always needs at least one filter.
+- `update()` and `delete()` always need at least one filter.
+- A field keeps the type it was first written with. Write `42`, not `"42"`,
+  and keep it a number afterwards — mixing types in one field is rejected,
+  including across the rows of a single batch insert.
+- `count` is how many rows came back, not how many exist. Use
+  `.count("exact")` and `total` to answer "how many".
 
 ## Related
 
 To read and write a project's data **directly** from an agent — operating on
 the data rather than writing app code — Cradler also offers an MCP server,
-`@cradler/mcp`.
+`@cradler/mcp`. Its `query` tool has the same distinction as the SDK: `count`
+is the page size, and `countTotal: true` returns `total`.
