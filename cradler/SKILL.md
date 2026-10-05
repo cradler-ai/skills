@@ -84,7 +84,7 @@ never pass them to `insert()` or `update()` — Cradler always sets them.
 ### Query
 
 ```ts
-// All rows:
+// Rows — at most 50 unless you call .limit() (max 1000 per call):
 const { rows } = await cradler.from("posts").select();
 
 // Specific columns, filtered, ordered, paginated:
@@ -113,6 +113,11 @@ Filters — chain as many as needed: `.eq` `.neq` `.gt` `.gte` `.lt` `.lte`
 `.like(field, pattern)` `.ilike(field, pattern)` `.in(field, [...])`
 `.isNull(field)` `.notNull(field)`.
 
+A query without `.limit()` returns at most **50** rows; `.limit()` accepts up
+to 1000. To show everything, page with `.limit(n).offset(k)` and use
+`.count("exact")` to know when to stop. Never pass `undefined` as a filter
+value (it throws) — check the variable first, or use `.isNull()`.
+
 ### Update and delete
 
 ```ts
@@ -131,8 +136,14 @@ bounded by `limit` — to learn how many rows match overall, add
 
 ## Files and images
 
+**Storage only works with the `service` key, so every storage call belongs in
+server-side code** (API routes, server actions, backend jobs). The `anon` key
+gets `403 forbidden` on storage. When a user picks a file in the browser,
+send it to the app's own server route (e.g. as `FormData`) and upload it
+from there — never move the `service` key to the browser to make it work.
+
 ```ts
-// Upload — body is a Blob, ArrayBuffer, or string.
+// Upload (server-side) — body is a Blob/File, ArrayBuffer, Buffer, or string.
 await cradler.storage.upload("avatars/cat.png", fileBlob, {
   contentType: "image/png",
 });
@@ -148,22 +159,9 @@ const files = await cradler.storage.list("avatars/");
 await cradler.storage.remove("avatars/cat.png");
 ```
 
-**When the upload happens in the browser, turn on image compression.**
-Pass `{ compress: true }` and the SDK will shrink and re-encode the image
-on the device before it is sent — typically 90%+ smaller than a raw phone
-photo. Non-image files (PDFs, zips, etc.) pass through unchanged, so it
-is safe to set on every browser-side upload:
-
-```ts
-const { path } = await cradler.storage.upload("avatars/cat.jpg", file, {
-  compress: true,
-});
-// `path` is now "avatars/cat.webp" — the extension follows the new format.
-// Save *this returned path* in the database, not the original.
-```
-
-Do not set `compress: true` in Node / server-side code — it only works in
-the browser. In server code, upload the bytes as-is.
+Do not set `compress: true`. It only works in a browser, and storage calls
+must not run in a browser (they need the `service` key) — on the server it
+throws. Upload the bytes as they are.
 
 **When you save a file reference in the database, store the path returned
 by `upload()`, not the URL.** URLs from `getUrl()` are short-lived signed
@@ -201,8 +199,8 @@ retrying. The codes worth handling:
 | `unauthorized` / `forbidden` | 401 / 403 | Bad key, or the `anon` key lacks permission on that table. |
 | `database_unavailable` | 503 | Transient — retry with backoff. |
 
-Every error also carries a `requestId`, which appears in Cradler's own logs.
-Include it when reporting a problem.
+Errors from the gateway also carry `err.requestId` (SDK 0.4.1+),
+which appears in Cradler's own logs. Include it when reporting a problem.
 
 ## Rules
 
@@ -215,6 +213,8 @@ Include it when reporting a problem.
 - `id`, `createdAt`, `updatedAt` are managed by Cradler — read them, but
   never include them in an `insert()` or `update()`.
 - `update()` and `delete()` always need at least one filter.
+- Queries return at most 50 rows unless you set `.limit()` (max 1000).
+- Storage calls run server-side only, with the `service` key.
 - A field keeps the type it was first written with. Write `42`, not `"42"`,
   and keep it a number afterwards — mixing types in one field is rejected,
   including across the rows of a single batch insert.
