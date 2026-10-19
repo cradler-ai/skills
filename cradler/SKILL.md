@@ -118,6 +118,49 @@ to 1000. To show everything, page with `.limit(n).offset(k)` and use
 `.count("exact")` to know when to stop. Never pass `undefined` as a filter
 value (it throws) — check the variable first, or use `.isNull()`.
 
+### Counts, sums and averages
+
+**Never compute a statistic from `select()` rows** — a query returns at most
+1000 rows, so a total or average built from them is silently wrong on a
+larger collection. Use `aggregate()`, which runs in the database over every
+matching row:
+
+```ts
+// One row per status: order count, revenue, average order value.
+const { rows } = await cradler
+  .from("orders")
+  .aggregate(
+    { fn: "count" },
+    { fn: "sum", field: "amount", as: "revenue" },
+    { fn: "avg", field: "amount" },
+  )
+  .groupBy("status")
+  .gte("createdAt", "2026-01-01")
+  .order("revenue", { desc: true });
+// rows: [{ status: "paid", count: 1840, revenue: 51230.5, avgAmount: 27.84 }, ...]
+
+// Without groupBy() — one row over everything that matches:
+const { rows: [stats] } = await cradler
+  .from("orders")
+  .aggregate({ fn: "count" }, { fn: "sum", field: "amount" })
+  .eq("status", "paid");
+// stats: { count: 1840, sumAmount: 51230.5 }
+```
+
+- Functions: `count` (no field counts rows; with a field, rows where it is
+  not null), `sum` / `avg` (numeric fields only), `min` / `max` (numbers,
+  text, dates).
+- Each value comes back under its `as` key, or by default `count` /
+  `sumAmount` / `avgAmount` (function + field).
+- `.order()` takes a `groupBy` field or an aggregate key. `.limit()` caps
+  the number of **groups** (default 100, max 1000), never the rows counted;
+  `.count("exact")` adds `total`, the number of groups.
+- Filters work exactly as on `select()`.
+
+To see which collections exist and what fields they have, call
+`cradler.listCollections()` — it returns
+`[{ collection, columns: { field: type } }]`.
+
 ### Update and delete
 
 ```ts
@@ -220,10 +263,14 @@ which appears in Cradler's own logs. Include it when reporting a problem.
   including across the rows of a single batch insert.
 - `count` is how many rows came back, not how many exist. Use
   `.count("exact")` and `total` to answer "how many".
+- Totals, averages, per-group counts: use `aggregate()`, never arithmetic
+  over `select()` rows (capped at 1000).
 
 ## Related
 
 To read and write a project's data **directly** from an agent — operating on
 the data rather than writing app code — Cradler also offers an MCP server,
 `@cradler/mcp`. Its `query` tool has the same distinction as the SDK: `count`
-is the page size, and `countTotal: true` returns `total`.
+is the page size, and `countTotal: true` returns `total`. Its `aggregate` tool
+is the SDK's `aggregate()`, and `list_collections` lists every collection with
+its columns.
