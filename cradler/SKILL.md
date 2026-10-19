@@ -118,6 +118,28 @@ to 1000. To show everything, page with `.limit(n).offset(k)` and use
 `.count("exact")` to know when to stop. Never pass `undefined` as a filter
 value (it throws) — check the variable first, or use `.isNull()`.
 
+**Comparisons never match an empty (`null`) field.** `.eq("used", false)`
+skips rows where `used` was never set; match emptiness with `.isNull()` /
+`.notNull()`. A field nobody has written to the collection yet is empty on
+every row, so a filter on it matches nothing — on `update()` / `delete()`
+too, which then change nothing yet succeed (`.isNull()` on such a field is
+refused instead). The result's `warnings` names the field. So **any field
+you will later filter on — flags like `used`, `revoked`, `processed` — must
+be written explicitly on every insert**:
+
+```ts
+// Write the flag up front, so the conditional update below can match:
+await cradler.from("invites").insert({ code, used: false });
+
+// "Claim once": only succeeds if nobody claimed it first.
+const { rows } = await cradler
+  .from("invites")
+  .update({ used: true })
+  .eq("code", code)
+  .eq("used", false);
+if (rows.length === 0) throw new Error("invite already used");
+```
+
 ### Counts, sums and averages
 
 **Never compute a statistic from `select()` rows** — a query returns at most
@@ -160,6 +182,38 @@ const { rows: [stats] } = await cradler
 To see which collections exist and what fields they have, call
 `cradler.listCollections()` — it returns
 `[{ collection, columns: { field: type } }]`.
+
+### Upsert and unique fields
+
+**Never check-then-insert** ("query for the email, insert if absent") — two
+requests at once both see nothing and both insert. Let Cradler enforce it:
+
+```ts
+// Insert, or update the row with the same email (only the fields passed are
+// updated; the rest keep their values):
+await cradler.from("users").upsert({ email, name }, { onConflict: "email" });
+
+// Idempotent create — a retry returns the stored row unchanged:
+const { rows: [post] } = await cradler
+  .from("posts")
+  .upsert({ idempotencyKey, text }, { onConflict: "idempotencyKey", ignoreDuplicates: true });
+
+// Reject duplicates (sign-up): throws CradlerError, status 409,
+// code "constraint_violation", if the email is taken.
+await cradler.from("users").insert({ email, passwordHash }, { unique: "email" });
+```
+
+- The first `upsert()` / `insert(..., { unique })` naming a field makes it
+  unique **permanently** — every later duplicate insert gets a 409, with or
+  without `unique`. There is no self-serve undo, so only use it on fields
+  that must never repeat (emails, external ids, idempotency keys).
+- Several fields are unique together: `onConflict: ["userId", "platform"]`.
+- `onConflict` defaults to `id`. Every upserted row needs a value for each
+  `onConflict` field.
+- If existing rows already repeat the value, the call fails with a 409 that
+  says how many — merge or delete them first.
+- Only the `service` key can make a field unique (do it from server code);
+  the `anon` key can use it afterwards.
 
 ### Update and delete
 
@@ -256,11 +310,16 @@ which appears in Cradler's own logs. Include it when reporting a problem.
 - `id`, `createdAt`, `updatedAt` are managed by Cradler — read them, but
   never include them in an `insert()` or `update()`.
 - `update()` and `delete()` always need at least one filter.
+- For "create unless it exists" and "must be unique" use `upsert()` or
+  `insert(..., { unique })` — never a query followed by an insert.
 - Queries return at most 50 rows unless you set `.limit()` (max 1000).
 - Storage calls run server-side only, with the `service` key.
 - A field keeps the type it was first written with. Write `42`, not `"42"`,
   and keep it a number afterwards — mixing types in one field is rejected,
   including across the rows of a single batch insert.
+- Write every field you will later filter on (e.g. `used: false`) at insert
+  time — a filter on an unset or never-written field matches nothing, and an
+  `update()` / `delete()` scoped by it silently changes nothing.
 - `count` is how many rows came back, not how many exist. Use
   `.count("exact")` and `total` to answer "how many".
 - Totals, averages, per-group counts: use `aggregate()`, never arithmetic
